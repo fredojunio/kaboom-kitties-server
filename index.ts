@@ -32,7 +32,9 @@ io.on('connection', (socket) => {
   socket.on('create_room', ({ playerName }) => {
     try {
       const roomCode = generateRoomCode();
-      rooms[roomCode] = new GameRoom(roomCode, io);
+      rooms[roomCode] = new GameRoom(roomCode, io, () => {
+        delete rooms[roomCode];
+      });
       socket.join(roomCode);
       rooms[roomCode].addPlayer(socket.id, playerName);
       socket.emit('room_created', { roomCode });

@@ -10,8 +10,12 @@ export class GameRoom {
   private io: Server;
   private deck: Deck | null = null;
   private nopeTimeout: NodeJS.Timeout | null = null;
+  private onEmpty: () => void;
+  private emptyTimeout: NodeJS.Timeout | null = null;
+  private readonly CLEANUP_DELAY = 120000; // 2 minutes
 
-  constructor(roomCode: string, io: Server) {
+  constructor(roomCode: string, io: Server, onEmpty: () => void) {
+    this.onEmpty = onEmpty;
     this.io = io;
     this.state = {
       roomCode,
@@ -40,6 +44,10 @@ export class GameRoom {
     }
 
     if (this.state.players.length >= 14) throw new Error('Room is full');
+    
+    // Clear cleanup timeout if anyone joins
+    this.clearEmptyTimeout();
+
     if (!this.state.players.find(p => p.id === id)) {
       this.state.players.push({
         id,
@@ -66,7 +74,32 @@ export class GameRoom {
     } else if (this.state.status === 'lobby') {
       this.state.players = this.state.players.filter(p => p.id !== playerId);
     }
+
+    // Check if room is now empty
+    this.checkEmptiness();
+
     this.broadcastState();
+  }
+
+  private checkEmptiness() {
+    const connectedPlayers = this.state.players.filter(p => p.connected);
+    if (connectedPlayers.length === 0) {
+      if (!this.emptyTimeout) {
+        console.log(`Room ${this.state.roomCode} is empty. Scheduling cleanup...`);
+        this.emptyTimeout = setTimeout(() => {
+          console.log(`Room ${this.state.roomCode} cleaned up due to inactivity.`);
+          this.onEmpty();
+        }, this.CLEANUP_DELAY);
+      }
+    }
+  }
+
+  public clearEmptyTimeout() {
+    if (this.emptyTimeout) {
+      console.log(`Room ${this.state.roomCode} active again. Cleanup cancelled.`);
+      clearTimeout(this.emptyTimeout);
+      this.emptyTimeout = null;
+    }
   }
 
   public kickPlayer(playerId: string) {
