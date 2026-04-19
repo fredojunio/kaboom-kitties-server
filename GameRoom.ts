@@ -438,10 +438,12 @@ export class GameRoom {
 
   public giveFavor(playerId: string, cardId: string) {
     if (!this.state.pendingFavor) throw new Error('No favor pending');
-    if (this.state.pendingFavor.targetId !== playerId) throw new Error('Not your favor to give');
+    const { attackerId, targetId } = this.state.pendingFavor;
+    
+    if (targetId !== playerId) throw new Error('Not your favor to give');
 
     const target = this.state.players.find(p => p.id === playerId);
-    const attacker = this.state.players.find(p => p.id === this.state.pendingFavor.attackerId);
+    const attacker = this.state.players.find(p => p.id === attackerId);
     
     if (!target || !attacker) throw new Error('Players not found');
 

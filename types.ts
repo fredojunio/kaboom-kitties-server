@@ -77,6 +77,7 @@ export interface ClientGameState {
   turnsRemaining: number;
   drawPileCount: number;
   recentDiscards: CardType[]; 
+  discardHistory: CardType[]; 
   pendingAction: {
     id: string;
     originalPlayerId: string;
