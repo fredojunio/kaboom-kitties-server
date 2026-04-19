@@ -69,6 +69,25 @@ export class GameRoom {
     this.broadcastState();
   }
 
+  public kickPlayer(playerId: string) {
+    const player = this.state.players.find(p => p.id === playerId);
+    if (!player) return;
+
+    // Notify the player they were kicked
+    this.io.to(playerId).emit('kicked');
+
+    if (this.state.status === 'lobby') {
+      this.state.players = this.state.players.filter(p => p.id !== playerId);
+    } else {
+      // If game started, just eliminate them so the game can continue
+      this.eliminatePlayer(playerId);
+      // Also mark as disconnected so they don't keep count as "connected" if they were
+      player.connected = false;
+    }
+    
+    this.broadcastState();
+  }
+
   // GAME LOOP
   public startGame(hostId: string) {
     if (this.state.status !== 'lobby') throw new Error('Game already started');
@@ -105,9 +124,22 @@ export class GameRoom {
     if (this.state.turnsRemaining > 1 && extraTurns === 0) {
       this.state.turnsRemaining--;
     } else {
+      const activePlayers = this.state.players.filter(p => !p.isEliminated);
+      if (activePlayers.length < 2) {
+        // If there aren't enough players to continue, resolve end state instead of looping
+        this.checkGameOver();
+        return;
+      }
+
+      // Safety: only loop if we know there is at least one non-eliminated player
+      let iterations = 0;
       do {
         this.state.currentPlayerIndex = (this.state.currentPlayerIndex + 1) % this.state.players.length;
+        iterations++;
+        // If we've looped through everyone and still find only eliminated players (safety break)
+        if (iterations > this.state.players.length) break;
       } while (this.state.players[this.state.currentPlayerIndex]!.isEliminated);
+      
       this.state.turnsRemaining = extraTurns > 0 ? extraTurns : 1;
     }
     
@@ -126,16 +158,31 @@ export class GameRoom {
     player.hand = []; // Discard hand
 
     this.io.to(this.state.roomCode).emit('player_eliminated', { playerId });
+    
+    // After elimination, check if game is over
+    if (this.checkGameOver()) return;
 
-    const remaining = this.state.players.filter(p => !p.isEliminated);
-    if (remaining.length === 1) {
-      this.state.status = 'finished';
-      this.state.winnerId = remaining[0].id;
-      this.io.to(this.state.roomCode).emit('game_over', { winnerId: remaining[0].id });
-    } else if (this.state.players[this.state.currentPlayerIndex].id === playerId) {
+    // If it was the eliminated player's turn, move to next turn
+    if (this.state.players[this.state.currentPlayerIndex].id === playerId) {
       this.nextTurn();
     }
     this.broadcastState();
+  }
+
+  private checkGameOver(): boolean {
+    const remaining = this.state.players.filter(p => !p.isEliminated);
+    
+    if (remaining.length <= 1) {
+      // Delay game over by 3 seconds so players can see the last explosion
+      setTimeout(() => {
+        this.state.status = 'finished';
+        this.state.winnerId = remaining.length === 1 ? remaining[0].id : null;
+        this.io.to(this.state.roomCode).emit('game_over', { winnerId: this.state.winnerId });
+        this.broadcastState();
+      }, 3000);
+      return true;
+    }
+    return false;
   }
 
   // PLAYING CARDS

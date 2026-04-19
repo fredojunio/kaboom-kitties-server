@@ -127,6 +127,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('kick_player', ({ roomCode, targetPlayerId }) => {
+    try {
+      const room = rooms[roomCode];
+      if (!room) throw new Error('Room not found');
+      
+      // Only host can kick (first player in list)
+      const isHost = room.state.players[0]?.id === socket.id;
+      if (!isHost) throw new Error('Only the host can kick players');
+      
+      room.kickPlayer(targetPlayerId);
+    } catch (e: any) {
+      socket.emit('error', { message: e.message });
+    }
+  });
+
   socket.on('disconnect', () => {
     // Find rooms player is in and handle disconnect
     Object.values(rooms).forEach(room => {
