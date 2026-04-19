@@ -70,6 +70,7 @@ io.on('connection', (socket) => {
         player.id = socket.id; // Update ID to current socket
         socket.join(roomCode);
         player.connected = true;
+        room.clearEmptyTimeout();
         if (player.disconnectTimeout) clearTimeout(player.disconnectTimeout);
         room.broadcastState();
       } else {
@@ -124,6 +125,14 @@ io.on('connection', (socket) => {
   socket.on('insert_defuse', ({ roomCode, index, card }) => {
     try {
       rooms[roomCode]?.insertDefusedKaboom(socket.id, index, card);
+    } catch (e: any) {
+      socket.emit('error', { message: e.message });
+    }
+  });
+
+  socket.on('give_favor', ({ roomCode, cardId }) => {
+    try {
+      rooms[roomCode]?.giveFavor(socket.id, cardId);
     } catch (e: any) {
       socket.emit('error', { message: e.message });
     }

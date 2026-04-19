@@ -54,6 +54,8 @@ export interface GameState {
   drawPileCount: number;
   discardPile: Card[];
   pendingAction: PendingAction | null;
+  activeKaboom: Card | null;
+  pendingFavor: { attackerId: string, targetId: string, attackerName: string } | null;
   winnerId: string | null;
 }
 
@@ -83,6 +85,7 @@ export interface ClientGameState {
     targetPlayerId?: string;
     nopeCount: number;
   } | null;
+  pendingFavor: { attackerId: string, targetId: string, attackerName: string } | null;
   winnerId: string | null;
   myHand: Card[];
 }

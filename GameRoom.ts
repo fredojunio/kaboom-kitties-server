@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ActionType, Card, CardType, ClientGameState, ClientPlayer, GameState, Player, PendingAction } from './types.js';
 import { Deck } from './Deck.js';
 
-const NOPE_WINDOW_MS = 2000;
+const NOPE_WINDOW_MS = 5000;
 
 export class GameRoom {
   public state: GameState;
@@ -26,6 +26,8 @@ export class GameRoom {
       drawPileCount: 0,
       discardPile: [],
       pendingAction: null,
+      activeKaboom: null,
+      pendingFavor: null,
       winnerId: null,
     };
   }
@@ -274,9 +276,6 @@ export class GameRoom {
     if (cardsToPlay.length !== cardIds.length) throw new Error('Cards not in hand');
     if (cardsToPlay.length < 2 || cardsToPlay.length > 3) throw new Error('Invalid combo size');
     
-    // Check all are same kitty cat
-    const isKitty = ['taco_cat', 'beard_cat', 'cattermelon', 'hairy_potato_cat', 'rainbow_ralphing_cat'].includes(cardsToPlay[0].type);
-    if (!isKitty) throw new Error('Only kitty cats can be comboed');
     const allSame = cardsToPlay.every(c => c.type === cardsToPlay[0].type);
     if (!allSame) throw new Error('Combo cards must match');
 
@@ -310,10 +309,6 @@ export class GameRoom {
 
     const card = player.hand.find(c => c.id === cardId);
     if (!card || card.type !== 'nope') throw new Error('Valid Nope card not found in hand');
-
-    // Nope card can only be played to interrupt other's actions, and not on your own turn
-    const isMyTurn = this.state.players[this.state.currentPlayerIndex].id === playerId;
-    if (isMyTurn) throw new Error('Cannot play a Nope card on your own turn');
 
     this.removeCardsFromHand(player, [cardId]);
     this.state.discardPile.push(card);
@@ -365,7 +360,11 @@ export class GameRoom {
 
   private executeAction(action: PendingAction) {
     if (action.actionType === 'play_card') {
-      const type = this.state.discardPile[this.state.discardPile.length - 1].type;
+      const cardId = action.cardIds?.[0];
+      const card = this.state.discardPile.find(c => c.id === cardId);
+      const type = card?.type;
+      
+      if (!type) return;
       
       switch (type) {
         case 'skip':
@@ -384,16 +383,14 @@ export class GameRoom {
           break;
         case 'demand': {
           const target = this.state.players.find(p => p.id === action.targetPlayerId);
-          if (target && target.hand.length > 0) {
-            // target gives 1 random card (or we could enforce target choosing, but for simplicitly picking random or top)
-            // Implementation: target player's client handles "choose a card" - wait, game rules say "they give you 1 card of their choice". 
-            // In a strict server model, we'd need a secondary pending state. 
-            // For now, since rules say "target gives", but architecture doesn't have a sub-state easily, we randomly take one for speed unless requested.
-            // Let's implement random steal for 'demand' to prevent stalling.
-            const rIdx = Math.floor(Math.random() * target.hand.length);
-            const stolen = target.hand.splice(rIdx, 1)[0];
-            const attacker = this.state.players.find(p => p.id === action.originalPlayerId);
-            attacker?.hand.push(stolen);
+          const attacker = this.state.players.find(p => p.id === action.originalPlayerId);
+          if (target && attacker && target.hand.length > 0) {
+            // Enter Favor Selection mode
+            this.state.pendingFavor = {
+              attackerId: attacker.id,
+              targetId: target.id,
+              attackerName: attacker.name
+            };
           }
           break;
         }
@@ -439,27 +436,56 @@ export class GameRoom {
     }
   }
 
+  public giveFavor(playerId: string, cardId: string) {
+    if (!this.state.pendingFavor) throw new Error('No favor pending');
+    if (this.state.pendingFavor.targetId !== playerId) throw new Error('Not your favor to give');
+
+    const target = this.state.players.find(p => p.id === playerId);
+    const attacker = this.state.players.find(p => p.id === this.state.pendingFavor.attackerId);
+    
+    if (!target || !attacker) throw new Error('Players not found');
+
+    const cardIdx = target.hand.findIndex(c => c.id === cardId);
+    if (cardIdx === -1) throw new Error('Card not in hand');
+
+    const stolen = target.hand.splice(cardIdx, 1)[0];
+    attacker.hand.push(stolen);
+
+    this.state.pendingFavor = null;
+    this.broadcastState();
+  }
+
   private handleKaboom(playerId: string, card: Card) {
     const player = this.state.players.find(p => p.id === playerId);
     if (!player) return;
 
     this.io.to(this.state.roomCode).emit('kaboom_drawn', { playerId });
+    this.state.activeKaboom = card;
 
     const defuseIdx = player.hand.findIndex(c => c.type === 'defuse');
     if (defuseIdx === -1) {
-      // Eliminated
-      this.eliminatePlayer(playerId);
-      this.state.discardPile.push(card); // Exploded kaboom discards
+      // Broadcast state so they see the kaboom on table
+      this.broadcastState();
+
+      // Delay elimination by 2 seconds so they see the card
+      setTimeout(() => {
+        // Double check if player is still there and eliminated
+        if (this.state.status !== 'playing') return;
+        this.eliminatePlayer(playerId);
+        this.state.discardPile.push(card);
+        this.state.activeKaboom = null;
+        this.broadcastState();
+      }, 2000);
     } else {
-      // Auto play defuse
+      // Auto play defuse (No Nope Window)
       const defuse = player.hand.splice(defuseIdx, 1)[0];
       this.state.discardPile.push(defuse);
       
       // Wait for player to insert kaboom back (in UI)
-      // Tell player's client to insert kaboom
-      this.io.to(playerId).emit('await_defuse_insert', { card });
+      this.io.to(playerId).emit('await_defuse_insert', { card: this.state.activeKaboom });
+      this.state.activeKaboom = null;
+      this.broadcastState();
     }
-    this.broadcastState();
   }
 
   public insertDefusedKaboom(playerId: string, index: number, card: Card) {
@@ -511,7 +537,10 @@ export class GameRoom {
       turnsRemaining: this.state.turnsRemaining,
       drawPileCount: this.state.drawPileCount,
       recentDiscards: this.state.discardPile.slice(-10).map(c => c.type),
+      discardHistory: this.state.discardPile.map(c => c.type),
       pendingAction: this.getSanitizedPendingAction(this.state.pendingAction),
+      activeKaboom: this.state.activeKaboom,
+      pendingFavor: this.state.pendingFavor,
       winnerId: this.state.winnerId,
       myHand: me ? me.hand : []
     };
