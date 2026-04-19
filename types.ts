@@ -86,6 +86,7 @@ export interface ClientGameState {
     targetPlayerId?: string;
     nopeCount: number;
   } | null;
+  activeKaboom: Card | null;
   pendingFavor: { attackerId: string, targetId: string, attackerName: string } | null;
   winnerId: string | null;
   myHand: Card[];
