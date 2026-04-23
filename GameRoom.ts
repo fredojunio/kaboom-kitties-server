@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ActionType, Card, CardType, ClientGameState, ClientPlayer, GameState, Player, PendingAction } from './types.js';
 import { Deck } from './Deck.js';
 
-const NOPE_WINDOW_MS = 5000;
+const NOPE_WINDOW_MS = 2000;
 
 export class GameRoom {
   public state: GameState;
@@ -29,13 +29,26 @@ export class GameRoom {
       activeKaboom: null,
       pendingFavor: null,
       winnerId: null,
+      actionLog: [],
     };
+  }
+
+  private addToLog(message: string) {
+    this.state.actionLog.push({
+      message,
+      timestamp: Date.now()
+    });
+    // Keep only last 50 logs to prevent state bloating
+    if (this.state.actionLog.length > 50) {
+      this.state.actionLog.shift();
+    }
   }
 
   // CONNECTION MANAGEMENT
   public addPlayer(id: string, name: string) {
+    const existing = this.state.players.find(p => p.id === id);
+
     if (this.state.status !== 'lobby') {
-      const existing = this.state.players.find(p => p.id === id);
       if (existing) {
         existing.connected = true;
         if (existing.disconnectTimeout) clearTimeout(existing.disconnectTimeout);
@@ -45,12 +58,12 @@ export class GameRoom {
       throw new Error('Game already started');
     }
 
-    if (this.state.players.length >= 14) throw new Error('Room is full');
+    if (this.state.players.length >= 14 && !existing) throw new Error('Room is full');
     
     // Clear cleanup timeout if anyone joins
     this.clearEmptyTimeout();
 
-    if (!this.state.players.find(p => p.id === id)) {
+    if (!existing) {
       this.state.players.push({
         id,
         name,
@@ -58,6 +71,9 @@ export class GameRoom {
         isEliminated: false,
         connected: true,
       });
+    } else {
+      existing.connected = true;
+      existing.name = name;
     }
     this.broadcastState();
   }
@@ -67,15 +83,6 @@ export class GameRoom {
     if (!player) return;
 
     player.connected = false;
-    
-    if (this.state.status === 'playing') {
-      // 60-second timer to eliminate
-      player.disconnectTimeout = setTimeout(() => {
-        this.eliminatePlayer(playerId);
-      }, 60000);
-    } else if (this.state.status === 'lobby') {
-      this.state.players = this.state.players.filter(p => p.id !== playerId);
-    }
 
     // Check if room is now empty
     this.checkEmptiness();
@@ -128,29 +135,37 @@ export class GameRoom {
     if (this.state.status !== 'lobby') throw new Error('Game already started');
     if (this.state.players.length < 2) throw new Error('Need at least 2 players');
 
-    // Build deck initially for random cards
-    const initialDeck = new Deck(this.state.players.length);
-    // Remove kabooms and defuses from initial hands deal
-    initialDeck.cards = initialDeck.cards.filter(c => c.type !== 'kaboom' && c.type !== 'defuse');
+    // 1. Create the action pool (59 cards)
+    this.deck = new Deck();
+    this.deck.buildActionPool();
 
-    // Deal 4 random cards + 1 Defuse to each player
+    // 2. Deal 4 action cards + 1 Defuse to each player
+    // Each player gets 1 defuse (total N defuses given to players)
     this.state.players.forEach(p => {
       p.hand = [
         { id: uuidv4(), type: 'defuse' }
       ];
       for (let i = 0; i < 4; i++) {
-        const c = initialDeck.draw();
+        const c = this.deck!.draw();
         if (c) p.hand.push(c);
       }
     });
 
-    // Rebuild the proper deck using Deck class
-    this.deck = new Deck(this.state.players.length);
+    // 3. Add remaining Defuses and Kabooms to the deck
+    // total defuses = playerCount + 4. N are already with players, so add 4 to deck.
+    this.deck.addCards('defuse', 4);
+    // total kabooms = playerCount - 1
+    this.deck.addCards('kaboom', this.state.players.length - 1);
+
+    // 4. Shuffle the final deck
+    this.deck.shuffle();
+
     this.state.drawPileCount = this.deck.count;
     this.state.status = 'playing';
     this.state.currentPlayerIndex = 0;
     this.state.turnsRemaining = 1;
 
+    this.addToLog('Game started!');
     this.io.to(this.state.roomCode).emit('game_started');
     this.broadcastState();
   }
@@ -193,12 +208,15 @@ export class GameRoom {
     player.hand = []; // Discard hand
 
     this.io.to(this.state.roomCode).emit('player_eliminated', { playerId });
+    this.addToLog(`${player.name} was eliminated!`);
     
     // After elimination, check if game is over
     if (this.checkGameOver()) return;
 
     // If it was the eliminated player's turn, move to next turn
     if (this.state.players[this.state.currentPlayerIndex].id === playerId) {
+      // Force remaining turns to 1 so nextTurn() accurately passes to the next alive player
+      this.state.turnsRemaining = 1; 
       this.nextTurn();
     }
     this.broadcastState();
@@ -212,6 +230,10 @@ export class GameRoom {
       setTimeout(() => {
         this.state.status = 'finished';
         this.state.winnerId = remaining.length === 1 ? remaining[0].id : null;
+        if (this.state.winnerId) {
+          const winner = this.state.players.find(p => p.id === this.state.winnerId);
+          this.addToLog(`${winner?.name || 'Someone'} won the game!`);
+        }
         this.io.to(this.state.roomCode).emit('game_over', { winnerId: this.state.winnerId });
         this.broadcastState();
       }, 3000);
@@ -314,6 +336,7 @@ export class GameRoom {
     this.state.discardPile.push(card);
 
     this.state.pendingAction.nopeCount++;
+    this.addToLog(`${player.name} played NOPE!`);
     // Reset timer
     this.resetNopeTimer();
     this.broadcastState();
@@ -322,6 +345,27 @@ export class GameRoom {
   // ACTIONS ENGINE
   private queueAction(action: PendingAction) {
     this.state.pendingAction = action;
+    
+    // Log the initial play
+    const player = this.state.players.find(p => p.id === action.originalPlayerId);
+    const target = this.state.players.find(p => p.id === action.targetPlayerId);
+    
+    if (player) {
+      if (action.actionType === 'play_card') {
+        const cardId = action.cardIds?.[0];
+        const type = this.state.discardPile.find(c => c.id === cardId)?.type;
+        const msg = target 
+          ? `${player.name} played ${type} on ${target.name}` 
+          : `${player.name} played ${type}`;
+        this.addToLog(msg);
+      } else if (action.actionType === 'play_combo') {
+        const count = action.cardIds?.length || 2;
+        const type = count === 2 ? 'Pair' : 'Trio';
+        const msg = `${player.name} played ${type} on ${target?.name || 'someone'}`;
+        this.addToLog(msg);
+      }
+    }
+
     this.resetNopeTimer();
     this.broadcastState();
   }
@@ -350,6 +394,10 @@ export class GameRoom {
       actionId: action.id,
       cancelled: isCancelled
     });
+
+    if (isCancelled) {
+      this.addToLog('Action was NOPED');
+    }
 
     if (!isCancelled) {
       this.executeAction(action);
@@ -421,6 +469,9 @@ export class GameRoom {
     if (this.state.pendingAction) throw new Error('Wait for action to resolve');
     if (this.state.players[this.state.currentPlayerIndex].id !== playerId) throw new Error('Not your turn');
 
+    const player = this.state.players.find(p => p.id === playerId);
+    if (!player || player.isEliminated) throw new Error('Player is eliminated');
+
     const card = this.deck!.draw();
     this.state.drawPileCount = this.deck!.count;
     
@@ -429,8 +480,10 @@ export class GameRoom {
     if (card.type === 'kaboom') {
       this.handleKaboom(playerId, card);
     } else {
-      const player = this.state.players.find(p => p.id === playerId);
-      player?.hand.push(card);
+      player.hand.push(card);
+      this.addToLog(`${player.name} drew a card`);
+      this.io.to(this.state.roomCode).emit('card_drawn', { playerId });
+      
       // End turn safely
       this.nextTurn();
     }
@@ -462,6 +515,7 @@ export class GameRoom {
     if (!player) return;
 
     this.io.to(this.state.roomCode).emit('kaboom_drawn', { playerId });
+    this.addToLog(`${player.name} drew a KABOOM KITTEN!`);
     this.state.activeKaboom = card;
 
     const defuseIdx = player.hand.findIndex(c => c.type === 'defuse');
@@ -495,6 +549,7 @@ export class GameRoom {
     // Must be their turn and they must be waiting to insert
     this.deck!.insertAt(card, index);
     this.state.drawPileCount++;
+    this.addToLog(`${this.state.players.find(p => p.id === playerId)?.name} defused the kitten!`);
     this.io.to(this.state.roomCode).emit('defuse_inserted');
     this.nextTurn(); // turn ends after resolving defuse
   }
@@ -544,7 +599,8 @@ export class GameRoom {
       activeKaboom: this.state.activeKaboom,
       pendingFavor: this.state.pendingFavor,
       winnerId: this.state.winnerId,
-      myHand: me ? me.hand : []
+      myHand: me ? me.hand : [],
+      actionLog: this.state.actionLog
     };
   }
 
