@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ActionType, Card, CardType, ClientGameState, ClientPlayer, GameState, Player, PendingAction } from './types.js';
 import { Deck } from './Deck.js';
 
-const NOPE_WINDOW_MS = 2000;
+const NOPE_WINDOW_MS = 3000;
 
 export class GameRoom {
   public state: GameState;
@@ -267,8 +267,8 @@ export class GameRoom {
 
     if (['defuse', 'kaboom', 'nope'].includes(card.type)) throw new Error('Cannot actively play this card');
     
-    // Validate target for Demand
-    if (card.type === 'demand' && !targetPlayerId) throw new Error('Demand requires a target');
+    // Validate target for Demand and Fate Switch
+    if ((card.type === 'demand' || card.type === 'fate_switch') && !targetPlayerId) throw new Error(`${card.type} requires a target`);
 
     const removed = this.removeCardsFromHand(player, [cardId]);
     this.state.discardPile.push(removed[0]);
@@ -439,6 +439,19 @@ export class GameRoom {
               targetId: target.id,
               attackerName: attacker.name
             };
+          }
+          break;
+        }
+        case 'fate_switch': {
+          const target = this.state.players.find(p => p.id === action.targetPlayerId);
+          const attacker = this.state.players.find(p => p.id === action.originalPlayerId);
+          if (target && attacker) {
+            const temp = attacker.hand;
+            attacker.hand = target.hand;
+            target.hand = temp;
+            
+            // Add custom log for the swap
+            this.addToLog(`${attacker.name} swapped hands with ${target.name}!`);
           }
           break;
         }

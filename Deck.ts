@@ -35,14 +35,15 @@ export class Deck {
   public buildActionPool() {
     const pool: CardType[] = [];
     
-    // Fixed Action Card Distribution (52 cards)
+    // Fixed Action Card Distribution (56 cards)
     const actionCounts: Record<string, number> = {
       'nope': 10,
       'attack': 8,
       'skip': 8,
       'demand': 8,
       'shuffle': 8,
-      'peek': 10
+      'peek': 10,
+      'fate_switch': 4
     };
 
     for (const [type, count] of Object.entries(actionCounts)) {

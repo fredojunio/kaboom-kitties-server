@@ -11,7 +11,8 @@ export type CardType =
   | 'beard_cat'
   | 'cattermelon'
   | 'hairy_potato_cat'
-  | 'rainbow_ralphing_cat';
+  | 'rainbow_ralphing_cat'
+  | 'fate_switch';
 
 export interface Card {
   id: string; // Unique UUID
