@@ -1,0 +1,13 @@
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# build output
+dist
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+*.tsbuildinfo
