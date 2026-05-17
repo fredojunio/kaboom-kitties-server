@@ -137,6 +137,14 @@ export class GameRoom {
     if (this.state.status !== 'lobby') throw new Error('Game already started');
     if (this.state.players.length < 2) throw new Error('Need at least 2 players');
 
+    // Randomize player turn order
+    for (let i = this.state.players.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = this.state.players[i];
+      this.state.players[i] = this.state.players[j];
+      this.state.players[j] = temp;
+    }
+
     // 1. Create the action pool (59 cards)
     this.deck = new Deck();
     this.deck.buildActionPool();
