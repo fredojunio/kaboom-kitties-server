@@ -58,6 +58,7 @@ export interface GameState {
   activeKaboom: Card | null;
   pendingFavor: { attackerId: string, targetId: string, attackerName: string } | null;
   winnerId: string | null;
+  turnExpiresAt: number | null;
   actionLog: { message: string, timestamp: number }[];
 }
 
@@ -91,6 +92,8 @@ export interface ClientGameState {
   activeKaboom: Card | null;
   pendingFavor: { attackerId: string, targetId: string, attackerName: string } | null;
   winnerId: string | null;
+  turnExpiresAt: number | null;
   myHand: Card[];
+  spectatorDeck?: Card[];
   actionLog: { message: string, timestamp: number }[];
 }

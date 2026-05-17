@@ -10,6 +10,7 @@ export class GameRoom {
   private io: Server;
   private deck: Deck | null = null;
   private nopeTimeout: NodeJS.Timeout | null = null;
+  private turnTimeout: NodeJS.Timeout | null = null;
   private onEmpty: () => void;
   private emptyTimeout: NodeJS.Timeout | null = null;
   private readonly CLEANUP_DELAY = 120000; // 2 minutes
@@ -29,6 +30,7 @@ export class GameRoom {
       activeKaboom: null,
       pendingFavor: null,
       winnerId: null,
+      turnExpiresAt: null,
       actionLog: [],
     };
   }
@@ -167,7 +169,7 @@ export class GameRoom {
 
     this.addToLog('Game started!');
     this.io.to(this.state.roomCode).emit('game_started');
-    this.broadcastState();
+    this.resetTurnTimer();
   }
 
   private nextTurn(extraTurns = 0) {
@@ -197,7 +199,7 @@ export class GameRoom {
       currentPlayerId: this.state.players[this.state.currentPlayerIndex].id,
       turnsRemaining: this.state.turnsRemaining
     });
-    this.broadcastState();
+    this.resetTurnTimer();
   }
 
   private eliminatePlayer(playerId: string) {
@@ -226,6 +228,7 @@ export class GameRoom {
     const remaining = this.state.players.filter(p => !p.isEliminated);
     
     if (remaining.length <= 1) {
+      this.clearTurnTimer();
       // Delay game over by 3 seconds so players can see the last explosion
       setTimeout(() => {
         this.state.status = 'finished';
@@ -344,6 +347,7 @@ export class GameRoom {
 
   // ACTIONS ENGINE
   private queueAction(action: PendingAction) {
+    this.clearTurnTimer();
     this.state.pendingAction = action;
     
     // Log the initial play
@@ -403,7 +407,7 @@ export class GameRoom {
       this.executeAction(action);
     }
     
-    this.broadcastState();
+    this.resetTurnTimer();
   }
 
   private executeAction(action: PendingAction) {
@@ -419,7 +423,7 @@ export class GameRoom {
           this.nextTurn();
           break;
         case 'attack':
-          const addedTurns = this.state.turnsRemaining > 1 ? this.state.turnsRemaining + 1 : 2;
+          const addedTurns = this.state.turnsRemaining > 1 ? this.state.turnsRemaining + 2 : 2;
           this.nextTurn(addedTurns);
           break;
         case 'peek':
@@ -520,10 +524,11 @@ export class GameRoom {
     attacker.hand.push(stolen);
 
     this.state.pendingFavor = null;
-    this.broadcastState();
+    this.resetTurnTimer();
   }
 
   private handleKaboom(playerId: string, card: Card) {
+    this.clearTurnTimer();
     const player = this.state.players.find(p => p.id === playerId);
     if (!player) return;
 
@@ -612,7 +617,9 @@ export class GameRoom {
       activeKaboom: this.state.activeKaboom,
       pendingFavor: this.state.pendingFavor,
       winnerId: this.state.winnerId,
+      turnExpiresAt: this.state.turnExpiresAt,
       myHand: me ? me.hand : [],
+      spectatorDeck: (me?.isEliminated && this.deck) ? [...this.deck.cards].reverse() : undefined,
       actionLog: this.state.actionLog
     };
   }
@@ -623,5 +630,47 @@ export class GameRoom {
         this.io.to(p.id).emit('game_state', this.getSanitizedStateForPlayer(p.id));
       }
     });
+  }
+
+  private resetTurnTimer() {
+    if (this.turnTimeout) {
+      clearTimeout(this.turnTimeout);
+      this.turnTimeout = null;
+    }
+
+    if (this.state.status !== 'playing' || this.state.pendingAction || this.state.activeKaboom || this.state.pendingFavor || this.state.players.filter(p => !p.isEliminated).length <= 1) {
+      this.state.turnExpiresAt = null;
+      return;
+    }
+
+    const currentPlayer = this.state.players[this.state.currentPlayerIndex];
+    if (!currentPlayer || currentPlayer.isEliminated) {
+      this.state.turnExpiresAt = null;
+      return;
+    }
+
+    const duration = 15000;
+    this.state.turnExpiresAt = Date.now() + duration;
+
+    this.turnTimeout = setTimeout(() => {
+      if (this.state.status === 'playing' && !this.state.pendingAction && !this.state.activeKaboom && !this.state.pendingFavor) {
+        this.addToLog(`${currentPlayer.name} didn't act in time. Auto-drawing...`);
+        try {
+          this.drawCard(currentPlayer.id);
+        } catch (e) {
+          console.error('Auto draw error:', e);
+        }
+      }
+    }, duration);
+
+    this.broadcastState();
+  }
+
+  private clearTurnTimer() {
+    if (this.turnTimeout) {
+      clearTimeout(this.turnTimeout);
+      this.turnTimeout = null;
+    }
+    this.state.turnExpiresAt = null;
   }
 }
